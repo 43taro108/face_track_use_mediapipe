@@ -141,4 +141,3 @@ if media_file:
             ax.set_zlabel('Z')
             ax.set_title('Face Landmark Mesh (Frontal XY, Rotated 90° Right)')
             st.pyplot(fig)
-
