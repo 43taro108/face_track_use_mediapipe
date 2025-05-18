@@ -73,7 +73,7 @@ def detect_landmarks(img_bytes, max_faces, det_conf, track_conf):
 # ------------------------------------------------------
 # 4. File uploader & display
 # ------------------------------------------------------
-media = st.file_uploader("画像または動画(mp4/avi)をアップロード", type=["jpg","png","mp4","avi"])
+media = st.file_uploader("画像または動画(mp4/avi)をアップロード_動画ファイル名に日本語は対応していません。", type=["jpg","png","mp4","avi"])
 if media:
     data = media.read()
     # if video, extract first frame
