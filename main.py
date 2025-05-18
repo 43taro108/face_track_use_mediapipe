@@ -4,7 +4,6 @@ Created on Sun May 18 12:16:11 2025
 
 @author: ktrpt
 """
-
 import streamlit as st
 import cv2
 import mediapipe as mp
