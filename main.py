@@ -4,19 +4,19 @@ Created on Sun May 18 12:16:11 2025
 
 @author: ktrpt
 """
-
 import streamlit as st
 import cv2
 import mediapipe as mp
 import pandas as pd
 import numpy as np
 import tempfile
+import matplotlib.pyplot as plt
 
 # ------------------------------------------------------
 # 0. Page config
 # ------------------------------------------------------
-st.set_page_config(page_title="Fast Face Landmark Mesh", page_icon="⚡", layout="wide")
-st.title("⚡ 高速顔ランドマークメッシュ抽出")
+st.set_page_config(page_title="Matplotlib Face Mesh", page_icon="🎨", layout="wide")
+st.title("🎨 顔ランドマークメッシュをmatplotlibで表示")
 
 # ------------------------------------------------------
 # 1. Sidebar settings
@@ -27,7 +27,7 @@ det_conf = st.sidebar.slider("検出信頼度", 0.1, 1.0, 0.5)
 track_conf = st.sidebar.slider("追跡信頼度", 0.1, 1.0, 0.5)
 
 # ------------------------------------------------------
-# 2. Caching model creation
+# 2. Cached model
 # ------------------------------------------------------
 @st.cache_resource
 def get_face_mesh(max_faces, det_conf, track_conf):
@@ -39,61 +39,44 @@ def get_face_mesh(max_faces, det_conf, track_conf):
         min_tracking_confidence=track_conf
     )
 
-mp_drawing = mp.solutions.drawing_utils
-mp_style = mp.solutions.drawing_styles
-
 # ------------------------------------------------------
-# 3. Landmark detection & drawing cache
+# 3. Cached landmark detection
 # ------------------------------------------------------
 @st.cache_data(show_spinner=False)
-def detect_and_draw(img_bytes, max_faces, det_conf, track_conf):
-    # Decode
+def detect_landmarks(img_bytes, max_faces, det_conf, track_conf):
+    # decode image
     arr = np.frombuffer(img_bytes, np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     h, w, _ = img.shape
-    # Resize for detection
+    # resize for speed
     small = cv2.resize(img, (320, 320))
     small_rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-    # Detect
+    # detect landmarks
     mesh = get_face_mesh(max_faces, det_conf, track_conf)
     results = mesh.process(small_rgb)
-    # Prepare output
-    canvas = img.copy()
-    records = []
     if not results.multi_face_landmarks:
-        return None, None
+        return None
+    # collect landmarks
+    records = []
     for face_landmarks in results.multi_face_landmarks:
-        # Draw mesh on full-res canvas
-        mp_drawing.draw_landmarks(
-            canvas,
-            face_landmarks,
-            mp.solutions.face_mesh.FACEMESH_TESSELATION,
-            landmark_drawing_spec=None,
-            connection_drawing_spec=mp_style.get_default_face_mesh_tesselation_style()
-        )
-        # Collect points (scaled back to full size)
         for lm_id, lm in enumerate(face_landmarks.landmark):
-            x_px = lm.x * w  # normalized to full size
+            # scale back to original resolution
+            x_px = lm.x * w
             y_px = lm.y * h
-            z_rel = lm.z * max(w, h)
             records.append({
                 "landmark_id": lm_id,
                 "x": x_px,
-                "y": y_px,
-                "z": z_rel
+                "y": y_px
             })
-    df = pd.DataFrame(records)
-    # Encode canvas image
-    canvas_rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
-    return df, canvas_rgb
+    return pd.DataFrame(records)
 
 # ------------------------------------------------------
-# 4. File uploader & processing
+# 4. File uploader & display
 # ------------------------------------------------------
-media = st.file_uploader("画像または動画1フレームをアップロード", type=["jpg","png","mp4","avi"])
+media = st.file_uploader("画像または動画(mp4/avi)をアップロード", type=["jpg","png","mp4","avi"])
 if media:
     data = media.read()
-    # If video, extract first frame
+    # if video, extract first frame
     if media.name.lower().endswith((".mp4",".avi")):
         tmp = tempfile.NamedTemporaryFile(delete=False)
         tmp.write(data)
@@ -105,15 +88,30 @@ if media:
             st.stop()
         _, img_encoded = cv2.imencode('.jpg', frame)
         data = img_encoded.tobytes()
-    # Display input
+    # show input
     st.image(data, caption="入力画像", use_column_width=True)
-    # Process
-    if st.button("▶ 高速抽出＆描画"):
-        df, canvas = detect_and_draw(data, max_faces, det_conf, track_conf)
-        if df is None:
+    if st.button("▶ メッシュを描画(mpl)"):
+        df = detect_landmarks(data, max_faces, det_conf, track_conf)
+        if df is None or df.empty:
             st.warning("顔が検出されませんでした。")
         else:
-            st.image(canvas, caption="メッシュ描画結果", use_column_width=True)
-            st.dataframe(df, use_container_width=True)
+            # matplotlib 2D mesh
+            face_ms = mp.solutions.face_mesh
+            mesh_conns = face_ms.FACEMESH_TESSELATION
+            fig, ax = plt.subplots(figsize=(6,6))
+            # draw edges
+            coords = {row.landmark_id: (row.x, row.y) for _,row in df.iterrows()}
+            for start, end in mesh_conns:
+                if start in coords and end in coords:
+                    x0,y0 = coords[start]
+                    x1,y1 = coords[end]
+                    ax.plot([x0,x1],[y0,y1], linewidth=0.5)
+            # scatter points
+            ax.scatter(df.x, df.y, s=2)
+            ax.invert_yaxis()
+            ax.set_aspect('equal')
+            ax.axis('off')
+            st.pyplot(fig)
+            # CSV download
             csv = df.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 CSV DL", csv, "landmarks.csv", "text/csv")
+            st.download_button("📥 CSV ダウンロード", csv, "landmarks.csv", "text/csv")
