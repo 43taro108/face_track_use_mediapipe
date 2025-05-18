@@ -90,44 +90,13 @@ if media_file:
                     records.append([lm_id, x, y, z])
             df = pd.DataFrame(records, columns=["landmark_id","x","y","z"])
 
-            # Roll correction using eyes (33,263)
+                        # Roll correction using eyes (33,263)
             pL = df[df.landmark_id==33][['x','y']].values[0]
             pR = df[df.landmark_id==263][['x','y']].values[0]
             roll = np.arctan2(pR[1]-pL[1], pR[0]-pL[0])
             # Yaw correction using cheeks (234,454)
-            pCL = df[df.landmark_id==234][['x','z']].values[0]
-            pCR = df[df.landmark_id==454][['x','z']].values[0]
-            yaw = np.arctan2(pCR[2]-pCL[2], pCR[0]-pCL[0])
-
-            # Combined rotation: first roll around Z, then yaw around Y
-            # Rotation matrices
-            Rz = np.array([[ np.cos(-roll), -np.sin(-roll), 0],
-                           [ np.sin(-roll),  np.cos(-roll), 0],
-                           [            0,             0, 1]])
-            Ry = np.array([[ np.cos(-yaw), 0, np.sin(-yaw)],
-                           [           0, 1,            0],
-                           [-np.sin(-yaw), 0, np.cos(-yaw)]])
-            pts = df[['x','y','z']].values
-            pts = pts.dot(Rz.T).dot(Ry.T)
-            df[['x','y','z']] = pts
-
-            st.success(f"抽出完了！ ランドマーク数: {len(df)}行")
-            st.dataframe(df, use_container_width=True)
-            csv = df.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 CSV をダウンロード", csv, file_name="face_landmarks.csv", mime="text/csv")
-
-            # 3D mesh frontal XY view
-            fig = plt.figure(figsize=(6,6))
-            ax = fig.add_subplot(111, projection='3d')
-            coords = {row.landmark_id:(row.x,row.y,row.z) for _,row in df.iterrows()}
-            for start,end in mp_face.FACEMESH_TESSELATION:
-                if start in coords and end in coords:
-                    xs,ys,zs = zip(coords[start],coords[end])
-                    ax.plot(xs,ys,zs,linewidth=0.5)
-            set_axes_equal(ax)
-            ax.view_init(elev=90,azim=0)
-            ax.set_xlabel('X')
-            ax.set_ylabel('Y')
-            ax.set_zlabel('Z')
-            ax.set_title('Face Landmark Mesh (Roll & Yaw Corrected)')
-            st.pyplot(fig)
+            # Extract x and z for cheek landmarks
+            pCL_xz = df[df.landmark_id==234][['x','z']].values[0]
+            pCR_xz = df[df.landmark_id==454][['x','z']].values[0]
+            # yaw angle: rotation around Y-axis to align cheeks
+            yaw = np.arctan2(pCR_xz[1] - pCL_xz[1], pCR_xz[0] - pCL_xz[0])
