@@ -4,6 +4,7 @@ Created on Sun May 18 12:16:11 2025
 
 @author: ktrpt
 """
+
 import streamlit as st
 import cv2
 import mediapipe as mp
@@ -14,8 +15,8 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 # 0. Page config
-st.set_page_config(page_title="Single-Frame Face Landmarks", page_icon="🖼️", layout="wide")
-st.title("🖼️ 1フレーム顔ランドマーク抽出＆3Dプロット")
+st.set_page_config(page_title="Face Landmark Mesh 3D", page_icon="🖼️", layout="wide")
+st.title("🖼️ 1フレーム顔ランドマークメッシュ＆3D正面表示")
 
 # Sidebar settings
 st.sidebar.header("🔧 設定")
@@ -25,6 +26,14 @@ min_track_conf = st.sidebar.slider("追跡信頼度の閾値", min_value=0.1, ma
 
 # File uploader: video or image
 media_file = st.file_uploader("動画(mp4/avi/mov)または画像(jpg/png)をアップロード", type=["mp4","avi","mov","jpg","jpeg","png"])
+
+# Utility to set equal aspect ratio in 3D
+def set_axes_equal(ax):
+    extents = np.array([getattr(ax, f'get_{axis}lim')() for axis in 'xyz'])
+    centers = np.mean(extents, axis=1)
+    max_range = np.max(extents[:,1] - extents[:,0]) / 2
+    for ctr, axis in zip(centers, 'xyz'):
+        getattr(ax, f'set_{axis}lim')(ctr - max_range, ctr + max_range)
 
 if media_file:
     # Save upload to temp file
@@ -37,31 +46,23 @@ if media_file:
 
     if is_video:
         cap = cv2.VideoCapture(path)
-        if not cap.isOpened():
-            st.error("動画ファイルを開けませんでした。")
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_no = st.slider("抽出するフレーム番号", min_value=0, max_value=total_frames-1, value=0)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
+        ret, frame = cap.read()
+        cap.release()
+        if ret:
+            st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption=f"Frame {frame_no}", use_column_width=True)
+            selected_frame = frame
         else:
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            # Frame selection slider
-            frame_no = st.slider("抽出するフレーム番号", min_value=0, max_value=total_frames-1, value=0)
-
-            # Preview frame
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
-            ret, frame = cap.read()
-            cap.release()
-            if ret:
-                st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption=f"Frame {frame_no}", use_column_width=True)
-                selected_frame = frame
-            else:
-                st.error("プレビュー用フレームを読み込めませんでした。")
-                st.stop()
+            st.error("プレビュー用フレームを読み込めませんでした。")
+            st.stop()
     else:
-        # Image
         img = cv2.imdecode(np.frombuffer(open(path, 'rb').read(), np.uint8), cv2.IMREAD_COLOR)
         st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption="アップロード画像", use_column_width=True)
         selected_frame = img
 
-    # Extraction button
-    if st.button("▶ ランドマーク抽出＆CSV出力"):
+    if st.button("▶ ランドマーク抽出＆可視化"):
         st.info("処理中…")
         # MediaPipe FaceMesh
         mp_face_mesh = mp.solutions.face_mesh
@@ -72,7 +73,6 @@ if media_file:
             min_detection_confidence=float(min_det_conf),
             min_tracking_confidence=float(min_track_conf)
         )
-        # Process one frame
         rgb = cv2.cvtColor(selected_frame, cv2.COLOR_BGR2RGB)
         results = face_mesh.process(rgb)
         face_mesh.close()
@@ -80,40 +80,42 @@ if media_file:
         if not results.multi_face_landmarks:
             st.warning("顔が検出されませんでした。")
         else:
+            # Prepare DataFrame
             records = []
             h, w, _ = selected_frame.shape
             for face_id, face_landmarks in enumerate(results.multi_face_landmarks):
                 for lm_id, lm in enumerate(face_landmarks.landmark):
-                    x_px = lm.x * w
-                    y_px = lm.y * h
-                    z_rel = lm.z * max(w, h)
                     records.append({
                         "face_id": face_id,
                         "landmark_id": lm_id,
-                        "x_px": x_px,
-                        "y_px": y_px,
-                        "z_rel": z_rel
+                        "x": lm.x * w,
+                        "y": lm.y * h,
+                        "z": lm.z * max(w, h)
                     })
             df = pd.DataFrame(records)
             st.success(f"抽出完了！ 顔{len(results.multi_face_landmarks)}件, ランドマーク数: {len(df)}行")
-
-            # Show as table
-            st.dataframe(df, use_container_width=True)
-
+            # Show landmarks table
+            st.dataframe(df[['landmark_id','x','y','z']], use_container_width=True)
             # CSV download
             csv = df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "📥 CSV をダウンロード", data=csv,
-                file_name="face_landmarks.csv", mime="text/csv"
-            )
+            st.download_button("📥 CSV をダウンロード", data=csv, file_name="face_landmarks.csv", mime="text/csv")
 
-            # 3D plot
-            fig = plt.figure(figsize=(6, 5))
+            # 3D mesh plot
+            fig = plt.figure(figsize=(6,6))
             ax = fig.add_subplot(111, projection='3d')
-            ax.scatter(df['x_px'], df['y_px'], df['z_rel'], s=10)
-            ax.set_xlabel('X (px)')
-            ax.set_ylabel('Y (px)')
-            ax.set_zlabel('Z (relative)')
-            ax.set_title('Face Landmarks 3D Scatter')
-            ax.invert_yaxis()
+            # Transform for frontal view: invert y and z
+            df['y'] = -df['y']
+            df['z'] = -df['z']
+            coords = {row.landmark_id: (row.x, row.y, row.z) for _, row in df.iterrows()}
+            # Draw mesh lines
+            for (start, end) in mp.solutions.face_mesh.FACEMESH_TESSELATION:
+                if start in coords and end in coords:
+                    xs, ys, zs = zip(coords[start], coords[end])
+                    ax.plot(xs, ys, zs, linewidth=0.5)
+            set_axes_equal(ax)
+            ax.view_init(elev=0, azim=180)
+            ax.set_xlabel('X')
+            ax.set_ylabel('Y')
+            ax.set_zlabel('Z')
+            ax.set_title('Face Landmark Mesh (Frontal View)')
             st.pyplot(fig)
