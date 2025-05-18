@@ -11,92 +11,109 @@ import mediapipe as mp
 import pandas as pd
 import numpy as np
 import tempfile
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
+# ------------------------------------------------------
 # 0. Page config
-st.set_page_config(page_title="Face Landmark Mesh 3D", page_icon="🖼️", layout="wide")
-st.title("🖼️ 1フレーム顔ランドマークメッシュ＆3D正面表示 (ロール＆ヨー補正)")
+# ------------------------------------------------------
+st.set_page_config(page_title="Fast Face Landmark Mesh", page_icon="⚡", layout="wide")
+st.title("⚡ 高速顔ランドマークメッシュ抽出")
 
-# Sidebar settings
+# ------------------------------------------------------
+# 1. Sidebar settings
+# ------------------------------------------------------
 st.sidebar.header("🔧 設定")
 max_faces = st.sidebar.number_input("同時検出する顔の数", min_value=1, max_value=4, value=1)
-min_det_conf = st.sidebar.slider("検出信頼度の閾値", min_value=0.1, max_value=1.0, value=0.5)
-min_track_conf = st.sidebar.slider("追跡信頼度の閾値", min_value=0.1, max_value=1.0, value=0.5)
+det_conf = st.sidebar.slider("検出信頼度", 0.1, 1.0, 0.5)
+track_conf = st.sidebar.slider("追跡信頼度", 0.1, 1.0, 0.5)
 
-# File uploader: video or image
-media_file = st.file_uploader(
-    "動画(mp4/avi/mov)または画像(jpg/png)をアップロード",
-    type=["mp4","avi","mov","jpg","jpeg","png"]
-)
+# ------------------------------------------------------
+# 2. Caching model creation
+# ------------------------------------------------------
+@st.cache_resource
+def get_face_mesh(max_faces, det_conf, track_conf):
+    return mp.solutions.face_mesh.FaceMesh(
+        static_image_mode=True,
+        max_num_faces=max_faces,
+        refine_landmarks=False,
+        min_detection_confidence=det_conf,
+        min_tracking_confidence=track_conf
+    )
 
-# Utility: equal aspect ratio for 3D axes
+mp_drawing = mp.solutions.drawing_utils
+mp_style = mp.solutions.drawing_styles
 
-def set_axes_equal(ax):
-    extents = np.array([getattr(ax, f'get_{axis}lim')() for axis in 'xyz'])
-    centers = np.mean(extents, axis=1)
-    max_range = np.max(extents[:,1] - extents[:,0]) / 2
-    for ctr, axis in zip(centers, 'xyz'):
-        getattr(ax, f'set_{axis}lim')(ctr - max_range, ctr + max_range)
+# ------------------------------------------------------
+# 3. Landmark detection & drawing cache
+# ------------------------------------------------------
+@st.cache_data(show_spinner=False)
+def detect_and_draw(img_bytes, max_faces, det_conf, track_conf):
+    # Decode
+    arr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    h, w, _ = img.shape
+    # Resize for detection
+    small = cv2.resize(img, (320, 320))
+    small_rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+    # Detect
+    mesh = get_face_mesh(max_faces, det_conf, track_conf)
+    results = mesh.process(small_rgb)
+    # Prepare output
+    canvas = img.copy()
+    records = []
+    if not results.multi_face_landmarks:
+        return None, None
+    for face_landmarks in results.multi_face_landmarks:
+        # Draw mesh on full-res canvas
+        mp_drawing.draw_landmarks(
+            canvas,
+            face_landmarks,
+            mp.solutions.face_mesh.FACEMESH_TESSELATION,
+            landmark_drawing_spec=None,
+            connection_drawing_spec=mp_style.get_default_face_mesh_tesselation_style()
+        )
+        # Collect points (scaled back to full size)
+        for lm_id, lm in enumerate(face_landmarks.landmark):
+            x_px = lm.x * w  # normalized to full size
+            y_px = lm.y * h
+            z_rel = lm.z * max(w, h)
+            records.append({
+                "landmark_id": lm_id,
+                "x": x_px,
+                "y": y_px,
+                "z": z_rel
+            })
+    df = pd.DataFrame(records)
+    # Encode canvas image
+    canvas_rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+    return df, canvas_rgb
 
-if media_file:
-    tfile = tempfile.NamedTemporaryFile(delete=False)
-    tfile.write(media_file.read())
-    path = tfile.name
-    is_video = path.lower().endswith(('.mp4', '.avi', '.mov'))
-
-    if is_video:
-        cap = cv2.VideoCapture(path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        frame_no = st.slider("抽出するフレーム番号", 0, total_frames-1, 0)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
+# ------------------------------------------------------
+# 4. File uploader & processing
+# ------------------------------------------------------
+media = st.file_uploader("画像または動画1フレームをアップロード", type=["jpg","png","mp4","avi"])
+if media:
+    data = media.read()
+    # If video, extract first frame
+    if media.name.lower().endswith((".mp4",".avi")):
+        tmp = tempfile.NamedTemporaryFile(delete=False)
+        tmp.write(data)
+        cap = cv2.VideoCapture(tmp.name)
         ret, frame = cap.read()
         cap.release()
         if not ret:
-            st.error("プレビュー用フレームを読み込めませんでした。")
+            st.error("動画からフレームを読み込めませんでした。")
             st.stop()
-        st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption=f"Frame {frame_no}", use_column_width=True)
-        selected_frame = frame
-    else:
-        img = cv2.imdecode(np.frombuffer(open(path,'rb').read(), np.uint8), cv2.IMREAD_COLOR)
-        st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption="アップロード画像", use_column_width=True)
-        selected_frame = img
-
-    if st.button("▶ ランドマーク抽出＆可視化"):
-        st.info("処理中…")
-        mp_face = mp.solutions.face_mesh
-        face_mesh = mp_face.FaceMesh(
-            static_image_mode=True,
-            max_num_faces=int(max_faces),
-            refine_landmarks=False,
-            min_detection_confidence=float(min_det_conf),
-            min_tracking_confidence=float(min_track_conf)
-        )
-        rgb = cv2.cvtColor(selected_frame, cv2.COLOR_BGR2RGB)
-        results = face_mesh.process(rgb)
-        face_mesh.close()
-
-        if not results.multi_face_landmarks:
+        _, img_encoded = cv2.imencode('.jpg', frame)
+        data = img_encoded.tobytes()
+    # Display input
+    st.image(data, caption="入力画像", use_column_width=True)
+    # Process
+    if st.button("▶ 高速抽出＆描画"):
+        df, canvas = detect_and_draw(data, max_faces, det_conf, track_conf)
+        if df is None:
             st.warning("顔が検出されませんでした。")
         else:
-            # Collect landmarks
-            h, w, _ = selected_frame.shape
-            records = []
-            for face_landmarks in results.multi_face_landmarks:
-                for lm_id, lm in enumerate(face_landmarks.landmark):
-                    x = lm.x * w
-                    y = lm.y * h
-                    z = lm.z * max(w, h)
-                    records.append([lm_id, x, y, z])
-            df = pd.DataFrame(records, columns=["landmark_id","x","y","z"])
-
-                        # Roll correction using eyes (33,263)
-            pL = df[df.landmark_id==33][['x','y']].values[0]
-            pR = df[df.landmark_id==263][['x','y']].values[0]
-            roll = np.arctan2(pR[1]-pL[1], pR[0]-pL[0])
-            # Yaw correction using cheeks (234,454)
-            # Extract x and z for cheek landmarks
-            pCL_xz = df[df.landmark_id==234][['x','z']].values[0]
-            pCR_xz = df[df.landmark_id==454][['x','z']].values[0]
-            # yaw angle: rotation around Y-axis to align cheeks
-            yaw = np.arctan2(pCR_xz[1] - pCL_xz[1], pCR_xz[0] - pCL_xz[0])
+            st.image(canvas, caption="メッシュ描画結果", use_column_width=True)
+            st.dataframe(df, use_container_width=True)
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 CSV DL", csv, "landmarks.csv", "text/csv")
