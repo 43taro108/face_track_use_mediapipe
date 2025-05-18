@@ -16,7 +16,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 # 0. Page config
 st.set_page_config(page_title="Face Landmark Mesh 3D", page_icon="🖼️", layout="wide")
-st.title("🖼️ 1フレーム顔ランドマークメッシュ＆3D正面表示")
+st.title("🖼️ 1フレーム顔ランドマークメッシュ＆3D XY正面表示")
 
 # Sidebar settings
 st.sidebar.header("🔧 設定")
@@ -25,9 +25,13 @@ min_det_conf = st.sidebar.slider("検出信頼度の閾値", min_value=0.1, max_
 min_track_conf = st.sidebar.slider("追跡信頼度の閾値", min_value=0.1, max_value=1.0, value=0.5)
 
 # File uploader: video or image
-media_file = st.file_uploader("動画(mp4/avi/mov)または画像(jpg/png)をアップロード", type=["mp4","avi","mov","jpg","jpeg","png"])
+media_file = st.file_uploader(
+    "動画(mp4/avi/mov)または画像(jpg/png)をアップロード",
+    type=["mp4","avi","mov","jpg","jpeg","png"]
+)
 
-# Utility to set equal aspect ratio in 3D
+# Utility: equal aspect ratio for 3D axes
+
 def set_axes_equal(ax):
     extents = np.array([getattr(ax, f'get_{axis}lim')() for axis in 'xyz'])
     centers = np.mean(extents, axis=1)
@@ -41,30 +45,41 @@ if media_file:
     tfile.write(media_file.read())
     path = tfile.name
 
-    # Determine media type
+    # Determine media type by extension
     is_video = path.lower().endswith(('.mp4', '.avi', '.mov'))
 
     if is_video:
         cap = cv2.VideoCapture(path)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        frame_no = st.slider("抽出するフレーム番号", min_value=0, max_value=total_frames-1, value=0)
+        frame_no = st.slider(
+            "抽出するフレーム番号",
+            min_value=0, max_value=total_frames-1, value=0
+        )
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
         ret, frame = cap.read()
         cap.release()
         if ret:
-            st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption=f"Frame {frame_no}", use_column_width=True)
+            st.image(
+                cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                caption=f"Frame {frame_no}", use_column_width=True
+            )
             selected_frame = frame
         else:
             st.error("プレビュー用フレームを読み込めませんでした。")
             st.stop()
     else:
-        img = cv2.imdecode(np.frombuffer(open(path, 'rb').read(), np.uint8), cv2.IMREAD_COLOR)
-        st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption="アップロード画像", use_column_width=True)
+        img = cv2.imdecode(
+            np.frombuffer(open(path, 'rb').read(), np.uint8),
+            cv2.IMREAD_COLOR
+        )
+        st.image(
+            cv2.cvtColor(img, cv2.COLOR_BGR2RGB),
+            caption="アップロード画像", use_column_width=True
+        )
         selected_frame = img
 
     if st.button("▶ ランドマーク抽出＆可視化"):
         st.info("処理中…")
-        # MediaPipe FaceMesh
         mp_face_mesh = mp.solutions.face_mesh
         face_mesh = mp_face_mesh.FaceMesh(
             static_image_mode=True,
@@ -80,7 +95,6 @@ if media_file:
         if not results.multi_face_landmarks:
             st.warning("顔が検出されませんでした。")
         else:
-            # Prepare DataFrame
             records = []
             h, w, _ = selected_frame.shape
             for face_id, face_landmarks in enumerate(results.multi_face_landmarks):
@@ -93,29 +107,30 @@ if media_file:
                         "z": lm.z * max(w, h)
                     })
             df = pd.DataFrame(records)
-            st.success(f"抽出完了！ 顔{len(results.multi_face_landmarks)}件, ランドマーク数: {len(df)}行")
-            # Show landmarks table
+            st.success(
+                f"抽出完了！ 顔{len(results.multi_face_landmarks)}件, "
+                f"ランドマーク数: {len(df)}行"
+            )
             st.dataframe(df[['landmark_id','x','y','z']], use_container_width=True)
-            # CSV download
             csv = df.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 CSV をダウンロード", data=csv, file_name="face_landmarks.csv", mime="text/csv")
+            st.download_button(
+                "📥 CSV をダウンロード", data=csv,
+                file_name="face_landmarks.csv", mime="text/csv"
+            )
 
-            # 3D mesh plot
+            # 3D mesh plot with XY plane facing viewer
             fig = plt.figure(figsize=(6,6))
             ax = fig.add_subplot(111, projection='3d')
-            # Transform for frontal view: invert y and z
-            df['y'] = -df['y']
-            df['z'] = -df['z']
             coords = {row.landmark_id: (row.x, row.y, row.z) for _, row in df.iterrows()}
-            # Draw mesh lines
-            for (start, end) in mp.solutions.face_mesh.FACEMESH_TESSELATION:
+            for (start, end) in mp_face_mesh.FACEMESH_TESSELATION:
                 if start in coords and end in coords:
                     xs, ys, zs = zip(coords[start], coords[end])
                     ax.plot(xs, ys, zs, linewidth=0.5)
             set_axes_equal(ax)
-            ax.view_init(elev=0, azim=180)
+            # View along positive Z axis to show XY plane front
+            ax.view_init(elev=90, azim=0)
             ax.set_xlabel('X')
             ax.set_ylabel('Y')
             ax.set_zlabel('Z')
-            ax.set_title('Face Landmark Mesh (Frontal View)')
+            ax.set_title('Face Landmark Mesh (Frontal XY)')
             st.pyplot(fig)
