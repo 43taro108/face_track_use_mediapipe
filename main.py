@@ -4,7 +4,6 @@ Created on Sun May 18 12:16:11 2025
 
 @author: ktrpt
 """
-
 import streamlit as st
 import cv2
 import mediapipe as mp
@@ -16,7 +15,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 # 0. Page config
 st.set_page_config(page_title="Face Landmark Mesh 3D", page_icon="🖼️", layout="wide")
-st.title("🖼️ 1フレーム顔ランドマークメッシュ＆3D XY正面表示 (右90°回転)")
+st.title("🖼️ 1フレーム顔ランドマークメッシュ＆3D 正面表示 (ロール補正)")
 
 # Sidebar settings
 st.sidebar.header("🔧 設定")
@@ -30,7 +29,7 @@ media_file = st.file_uploader(
     type=["mp4","avi","mov","jpg","jpeg","png"]
 )
 
-# Utility: equal aspect ratio for 3D axes
+# Utility: set equal aspect ratio for 3D axes
 
 def set_axes_equal(ax):
     extents = np.array([getattr(ax, f'get_{axis}lim')() for axis in 'xyz'])
@@ -53,7 +52,7 @@ if media_file:
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         frame_no = st.slider(
             "抽出するフレーム番号",
-            min_value=0, max_value=total_frames-1, value=0
+            0, total_frames-1, 0
         )
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
         ret, frame = cap.read()
@@ -80,6 +79,7 @@ if media_file:
 
     if st.button("▶ ランドマーク抽出＆可視化"):
         st.info("処理中…")
+        # FaceMesh detection
         mp_face_mesh = mp.solutions.face_mesh
         face_mesh = mp_face_mesh.FaceMesh(
             static_image_mode=True,
@@ -95,6 +95,7 @@ if media_file:
         if not results.multi_face_landmarks:
             st.warning("顔が検出されませんでした。")
         else:
+            # Collect landmarks
             records = []
             h, w, _ = selected_frame.shape
             for face_id, face_landmarks in enumerate(results.multi_face_landmarks):
@@ -102,30 +103,42 @@ if media_file:
                     x = lm.x * w
                     y = lm.y * h
                     z = lm.z * max(w, h)
-                    # 90° right rotation around Y-axis: (x, y, z) -> (z, y, -x)
-                    xr = z
-                    yr = y
-                    zr = -x
                     records.append({
-                        "face_id": face_id,
                         "landmark_id": lm_id,
-                        "x": xr,
-                        "y": yr,
-                        "z": zr
+                        "x": x,
+                        "y": y,
+                        "z": z
                     })
             df = pd.DataFrame(records)
-            st.success(
-                f"抽出完了！ 顔{len(results.multi_face_landmarks)}件, "
-                f"ランドマーク数: {len(df)}行"
-            )
+
+            # Roll correction: align eyes horizontally
+            # Landmarks 33 (left eye inner) and 263 (right eye inner)
+            try:
+                p33 = df[df['landmark_id']==33][['x','y']].values[0]
+                p263 = df[df['landmark_id']==263][['x','y']].values[0]
+                dx, dy = p263[0]-p33[0], p263[1]-p33[1]
+                roll = np.arctan2(dy, dx)
+                # Rotation matrix around Z-axis
+                Rz = np.array([
+                    [ np.cos(-roll), -np.sin(-roll), 0],
+                    [ np.sin(-roll),  np.cos(-roll), 0],
+                    [            0,             0, 1]
+                ])
+                pts = np.vstack([df['x'], df['y'], df['z']]).T
+                pts_rot = pts.dot(Rz.T)
+                df[['x','y','z']] = pts_rot
+            except Exception as e:
+                st.warning(f"ロール補正に失敗しました: {e}")
+
+            st.success(f"抽出完了！ ランドマーク数: {len(df)}行")
             st.dataframe(df[['landmark_id','x','y','z']], use_container_width=True)
             csv = df.to_csv(index=False).encode('utf-8')
             st.download_button(
-                "📥 CSV をダウンロード", data=csv,
+                "📥 CSV をダウンロード", csv,
                 file_name="face_landmarks.csv", mime="text/csv"
             )
 
-            # 3D mesh plot with XY plane facing viewer
+            # 3D mesh plot (XY plane frontal)
             fig = plt.figure(figsize=(6,6))
             ax = fig.add_subplot(111, projection='3d')
             coords = {row.landmark_id: (row.x, row.y, row.z) for _, row in df.iterrows()}
@@ -134,10 +147,9 @@ if media_file:
                     xs, ys, zs = zip(coords[start], coords[end])
                     ax.plot(xs, ys, zs, linewidth=0.5)
             set_axes_equal(ax)
-            # View along positive Z axis (XY plane frontal)
             ax.view_init(elev=90, azim=0)
             ax.set_xlabel('X')
             ax.set_ylabel('Y')
             ax.set_zlabel('Z')
-            ax.set_title('Face Landmark Mesh (Frontal XY, Rotated 90° Right)')
+            ax.set_title('Face Landmark Mesh (Frontal XY, Roll-Corrected)')
             st.pyplot(fig)
