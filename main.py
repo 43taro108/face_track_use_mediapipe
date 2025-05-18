@@ -16,7 +16,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 # 0. Page config
 st.set_page_config(page_title="Face Landmark Mesh 3D", page_icon="🖼️", layout="wide")
-st.title("🖼️ 1フレーム顔ランドマークメッシュ＆3D XY正面表示")
+st.title("🖼️ 1フレーム顔ランドマークメッシュ＆3D XY正面表示 (右90°回転)")
 
 # Sidebar settings
 st.sidebar.header("🔧 設定")
@@ -99,12 +99,19 @@ if media_file:
             h, w, _ = selected_frame.shape
             for face_id, face_landmarks in enumerate(results.multi_face_landmarks):
                 for lm_id, lm in enumerate(face_landmarks.landmark):
+                    x = lm.x * w
+                    y = lm.y * h
+                    z = lm.z * max(w, h)
+                    # 90° right rotation around Y-axis: (x, y, z) -> (z, y, -x)
+                    xr = z
+                    yr = y
+                    zr = -x
                     records.append({
                         "face_id": face_id,
                         "landmark_id": lm_id,
-                        "x": lm.x * w,
-                        "y": lm.y * h,
-                        "z": lm.z * max(w, h)
+                        "x": xr,
+                        "y": yr,
+                        "z": zr
                     })
             df = pd.DataFrame(records)
             st.success(
@@ -127,10 +134,11 @@ if media_file:
                     xs, ys, zs = zip(coords[start], coords[end])
                     ax.plot(xs, ys, zs, linewidth=0.5)
             set_axes_equal(ax)
-            # View along positive Z axis to show XY plane front
+            # View along positive Z axis (XY plane frontal)
             ax.view_init(elev=90, azim=0)
             ax.set_xlabel('X')
             ax.set_ylabel('Y')
             ax.set_zlabel('Z')
-            ax.set_title('Face Landmark Mesh (Frontal XY)')
+            ax.set_title('Face Landmark Mesh (Frontal XY, Rotated 90° Right)')
             st.pyplot(fig)
+
